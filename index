@@ -19,7 +19,7 @@
 
     <!-- 指定した緯度・経度に3D建物モデル（GLB）を配置 -->
     <a-entity
-      gltf-model="url(./building.glb)"
+      gltf-model="url(./freehouse.glb)"
       gps-new-entity-place="latitude: 37.1319; longitude: 140.2130;"
       scale="1 1 1"
       rotation="0 0 0"
