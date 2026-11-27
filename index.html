@@ -2,9 +2,31 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>Hello World</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>空き地ARプレビュー</title>
+  <!-- model-viewerの読み込み -->
+  <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.4.0/model-viewer.min.js"></script>
+  <style>
+    body { margin: 0; }
+    model-viewer { width: 100vw; height: 100vh; }
+  </style>
 </head>
 <body>
-  <p>Hello, World!</p>
+
+  <!-- ar属性をつけるだけでARボタンが自動生成される -->
+  <model-viewer 
+    src="freehouse.glb" 
+    ar 
+    ar-modes="webxr scene-viewer quick-look" 
+    ar-scale="fixed"
+    camera-controls 
+    shadow-intensity="1"
+    alt="建物の3Dモデル">
+    
+    <button slot="ar-button" style="position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); padding: 12px 24px; font-size: 16px;">
+      現地でAR表示する
+    </button>
+  </model-viewer>
+
 </body>
 </html>
