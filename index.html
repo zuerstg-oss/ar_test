@@ -2,31 +2,493 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>空き地ARプレビュー</title>
-  <!-- model-viewerの読み込み -->
-  <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.4.0/model-viewer.min.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>空き地ARシミュレーター（3ステップ統合版）</title>
   <style>
-    body { margin: 0; }
-    model-viewer { width: 100vw; height: 100vh; }
+    * { box-sizing: border-box; font-family: sans-serif; }
+    body { margin: 0; overflow: hidden; background: #111; color: #fff; }
+
+    /* 初期スタート画面（WebXR起動前） */
+    #start-screen {
+      position: fixed; inset: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; padding: 24px; text-align: center;
+      background: linear-gradient(135deg, #1e293b, #0f172a); z-index: 100;
+    }
+    #start-screen h1 { font-size: 22px; margin-bottom: 12px; }
+    #start-screen p { font-size: 14px; color: #cbd5e1; line-height: 1.6; margin-bottom: 24px; }
+    .btn-primary {
+      background: #2563eb; color: white; border: none; padding: 14px 28px;
+      font-size: 16px; font-weight: bold; border-radius: 8px; cursor: pointer;
+    }
+
+    /* AR実行中のオーバーレイUI（dom-overlay） */
+    #ar-overlay {
+      display: none; position: fixed; inset: 0; pointer-events: none; z-index: 10;
+    }
+    .ui-box {
+      pointer-events: auto; background: rgba(15, 23, 42, 0.85);
+      backdrop-filter: blur(6px); border-radius: 12px; padding: 14px;
+      border: 1px solid rgba(255,255,255,0.15);
+    }
+
+    /* 上部ステップバー */
+    #step-header {
+      position: absolute; top: 12px; left: 12px; right: 12px;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .step-badge { font-size: 13px; font-weight: bold; color: #38bdf8; }
+    .step-desc { font-size: 13px; margin-top: 4px; }
+
+    /* 画面下部コントロールパネル */
+    #bottom-panel {
+      position: absolute; bottom: 16px; left: 12px; right: 12px;
+    }
+    .btn-row { display: flex; gap: 8px; margin-top: 10px; }
+    button.action-btn {
+      flex: 1; padding: 12px; border: none; border-radius: 8px;
+      font-size: 14px; font-weight: bold; cursor: pointer;
+    }
+    .btn-blue { background: #2563eb; color: #fff; }
+    .btn-gray { background: #475569; color: #fff; }
+    .btn-green { background: #16a34a; color: #fff; }
+
+    /* 各ステップのパネル表示制御 */
+    .step-panel { display: none; }
+    .step-panel.active { display: block; }
+
+    /* 辺の長さ入力グリッド */
+    .edge-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px;
+    }
+    .edge-item { font-size: 12px; }
+    .edge-item input {
+      width: 100%; padding: 6px; margin-top: 2px; border-radius: 4px;
+      border: 1px solid #64748b; background: #1e293b; color: #fff; font-size: 14px;
+    }
+
+    /* 建物選択リスト */
+    .model-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+    .model-option {
+      padding: 10px; background: #1e293b; border: 2px solid #334155;
+      border-radius: 8px; color: #fff; text-align: left; font-size: 14px;
+    }
+    .model-option.selected { border-color: #38bdf8; background: #0c4a6e; }
+
+    /* 画面中央の照準（タップ位置ガイド） */
+    #crosshair {
+      position: absolute; top: 50%; left: 50%; width: 24px; height: 24px;
+      transform: translate(-50%, -50%); border: 2px solid rgba(255,255,255,0.6);
+      border-radius: 50%; display: none;
+    }
   </style>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
 </head>
 <body>
 
-  <!-- ar属性をつけるだけでARボタンが自動生成される -->
-  <model-viewer 
-    src="freehouse.glb" 
-    ar 
-    ar-modes="webxr scene-viewer quick-look" 
-    ar-scale="fixed"
-    camera-controls 
-    shadow-intensity="1"
-    alt="建物の3Dモデル">
-    
-    <button slot="ar-button" style="position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); padding: 12px 24px; font-size: 16px;">
-      現地でAR表示する
-    </button>
-  </model-viewer>
+  <!-- 起動前画面 -->
+  <div id="start-screen">
+    <h1>空き地ARシミュレーター</h1>
+    <p>
+      1. 土地の四隅をタップして境界線を設定<br>
+      2. 配置する建物（GLB）を選択<br>
+      3. 原寸大で土地と建物を重ねて確認
+    </p>
+    <button id="start-ar-btn" class="btn-primary">ARカメラを起動する</button>
+    <p id="error-msg" style="color:#f87171; font-size:12px; margin-top:12px;"></p>
+  </div>
 
+  <!-- ARオーバーレイUI -->
+  <div id="ar-overlay">
+    <div id="crosshair"></div>
+
+    <!-- 上部ガイド -->
+    <div id="step-header" class="ui-box">
+      <div>
+        <div id="step-title" class="step-badge">STEP 1 / 3：土地セット</div>
+        <div id="step-instruction" class="step-desc">地面を映して白い輪が出たら、四隅の1点目をタップ</div>
+      </div>
+    </div>
+
+    <!-- 下部操作パネル -->
+    <div id="bottom-panel" class="ui-box">
+
+      <!-- STEP 1: 土地セットパネル -->
+      <div id="panel-step1" class="step-panel active">
+        <div id="pin-status" style="font-size:13px;">打った点：0 / 4 点（手前左 → 手前右 → 奥右 → 奥左 の順）</div>
+        
+        <!-- 4点打った後に表示される辺の長さ入力 -->
+        <div id="edge-inputs" style="display:none;">
+          <div style="font-size:12px; color:#94a3b8; margin-top:6px;">各辺の実寸(m)を入力（目視では台形でもデータ上は四角として保持）</div>
+          <div class="edge-grid">
+            <div class="edge-item">手前の辺 (m)<input type="number" id="edge-front" value="15" step="0.5"></div>
+            <div class="edge-item">右の辺 (m)<input type="number" id="edge-right" value="15" step="0.5"></div>
+            <div class="edge-item">奥の辺 (m)<input type="number" id="edge-back" value="15" step="0.5"></div>
+            <div class="edge-item">左の辺 (m)<input type="number" id="edge-left" value="15" step="0.5"></div>
+          </div>
+        </div>
+
+        <div class="btn-row">
+          <button id="reset-pins-btn" class="action-btn btn-gray">ピンをやり直す</button>
+          <button id="to-step2-btn" class="action-btn btn-blue" disabled>次へ（建物選択）</button>
+        </div>
+      </div>
+
+      <!-- STEP 2: 建物選択パネル -->
+      <div id="panel-step2" class="step-panel">
+        <div style="font-size:13px; font-weight:bold;">配置する3D建物（GLB）を選択</div>
+        <div class="model-list" id="preset-models">
+          <button class="model-option selected" data-url="building.glb">標準プラン（building.glb）</button>
+          <!-- サーバーに他ファイルがある場合はここに追加可能 -->
+        </div>
+        <div style="margin-top:8px;">
+          <label style="font-size:12px; color:#94a3b8; display:block; margin-bottom:4px;">またはスマホ内のGLBファイルを選択：</label>
+          <input type="file" id="local-glb-input" accept=".glb" style="font-size:12px; color:#fff;">
+        </div>
+        <div class="btn-row">
+          <button id="back-to-step1-btn" class="action-btn btn-gray">土地設定に戻る</button>
+          <button id="to-step3-btn" class="action-btn btn-green">土地に配置して表示</button>
+        </div>
+      </div>
+
+      <!-- STEP 3: 完成画面（合成プレビュー）パネル -->
+      <div id="panel-step3" class="step-panel">
+        <div style="font-size:12px; color:#cbd5e1; margin-bottom:6px;">
+          土地枠線（黄）内に建物を原寸大表示中（角度に応じて奥行き遠近感が自動適用されます）
+        </div>
+        <div class="btn-row">
+          <button id="rotate-left-btn" class="action-btn btn-gray">↺ 左へ5°回転</button>
+          <button id="rotate-right-btn" class="action-btn btn-gray">↻ 右へ5°回転</button>
+        </div>
+        <div class="btn-row">
+          <button id="back-to-step2-btn" class="action-btn btn-gray">建物を変更</button>
+          <button id="restart-all-btn" class="action-btn btn-blue">最初からやり直す</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+    let camera, scene, renderer;
+    let reticle;
+    let hitTestSource = null;
+    let hitTestSourceRequested = false;
+
+    // アプリ状態管理
+    let currentStep = 1; // 1: 土地セット, 2: 建物選択, 3: 完成表示
+    const landPoints = []; // 3D空間上の4隅の座標 (THREE.Vector3)
+    const pinMeshes = [];
+    let landLineMesh = null;
+    let buildingModel = null;
+    let selectedGlbUrl = 'building.glb';
+    let buildingRotationY = 0;
+
+    const loader = new GLTFLoader();
+
+    // DOM要素
+    const startScreen = document.getElementById('start-screen');
+    const arOverlay = document.getElementById('ar-overlay');
+    const stepTitle = document.getElementById('step-title');
+    const stepInstruction = document.getElementById('step-instruction');
+    const pinStatus = document.getElementById('pin-status');
+    const edgeInputs = document.getElementById('edge-inputs');
+    const toStep2Btn = document.getElementById('to-step2-btn');
+
+    init();
+
+    function init() {
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 100);
+
+      // 環境光と太陽光（建物が立体的に見えるように）
+      scene.add(new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1.2));
+      const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+      dirLight.position.set(10, 20, 10);
+      scene.add(dirLight);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.xr.enabled = true;
+      document.body.appendChild(renderer.domElement);
+
+      // 地面認識用のレティクル（白いリング）
+      const ringGeo = new THREE.RingGeometry(0.12, 0.16, 32).rotateX(-Math.PI / 2);
+      const ringMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+      reticle = new THREE.Mesh(ringGeo, ringMat);
+      reticle.matrixAutoUpdate = false;
+      reticle.visible = false;
+      scene.add(reticle);
+
+      // AR起動ボタン処理
+      document.getElementById('start-ar-btn').addEventListener('click', startAR);
+
+      // 画面タップ（WebXRのselectイベント）でピンを打つ
+      const controller = renderer.xr.getController(0);
+      controller.addEventListener('select', onSelect);
+      scene.add(controller);
+
+      setupUIEvents();
+    }
+
+    async function startAR() {
+      if (!navigator.xr) {
+        document.getElementById('error-msg').textContent = 'このブラウザはWebXRに対応していません（Android版Chromeをご利用ください）。';
+        return;
+      }
+      try {
+        const session = await navigator.xr.requestSession('immersive-ar', {
+          requiredFeatures: ['hit-test'],
+          optionalFeatures: ['dom-overlay'],
+          domOverlay: { root: arOverlay }
+        });
+        renderer.xr.setReferenceSpaceType('local');
+        await renderer.xr.setSession(session);
+
+        startScreen.style.display = 'none';
+        arOverlay.style.display = 'block';
+        renderer.setAnimationLoop(render);
+      } catch (e) {
+        document.getElementById('error-msg').textContent = 'AR起動エラー: ' + e.message + '（HTTPS環境か確認してください）';
+      }
+    }
+
+    // 地面タップ時の処理（STEP 1のみ有効）
+    function onSelect() {
+      if (currentStep !== 1) return;
+      if (!reticle.visible) return;
+      if (landPoints.length >= 4) return;
+
+      const pos = new THREE.Vector3();
+      pos.setFromMatrixPosition(reticle.matrix);
+      landPoints.push(pos);
+
+      // 目印の赤いピン（ポール）を地面に立てる
+      const pinGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.6, 16);
+      pinGeo.translate(0, 0.3, 0);
+      const pinMat = new THREE.MeshBasicMaterial({ color: 0xff3b30 });
+      const pin = new THREE.Mesh(pinGeo, pinMat);
+      pin.position.copy(pos);
+      scene.add(pin);
+      pinMeshes.push(pin);
+
+      updateLandStatus();
+    }
+
+    // 4点のピン状態と土地の枠線描画更新
+    function updateLandStatus() {
+      const count = landPoints.length;
+      pinStatus.textContent = `打った点：${count} / 4 点`;
+
+      if (count < 4) {
+        stepInstruction.textContent = `地面を映して白い輪が出たら、四隅の${count + 1}点目をタップ`;
+        edgeInputs.style.display = 'none';
+        toStep2Btn.disabled = true;
+      } else {
+        stepInstruction.textContent = '4点設定完了！各辺の数値(m)を確認して次へ進んでください';
+        edgeInputs.style.display = 'block';
+        toStep2Btn.disabled = false;
+        reticle.visible = false;
+        drawLandBoundary();
+      }
+    }
+
+    // 4点を結ぶ土地の境界線（黄色い太線）を描画
+    function drawLandBoundary() {
+      if (landLineMesh) {
+        scene.remove(landLineMesh);
+        landLineMesh.geometry.dispose();
+        landLineMesh.material.dispose();
+      }
+      // 4点を閉じたループにする
+      const pts = [...landPoints, landPoints[0]];
+      // 少しだけ地面から浮かせて(Y+0.03m)埋もれを防ぐ
+      const elevatedPts = pts.map(p => new THREE.Vector3(p.x, p.y + 0.03, p.z));
+      const geometry = new THREE.BufferGeometry().setFromPoints(elevatedPts);
+      const material = new THREE.LineBasicMaterial({ color: 0xfacc15, linewidth: 4 });
+      landLineMesh = new THREE.Line(geometry, material);
+      scene.add(landLineMesh);
+    }
+
+    // ステップ切り替え管理
+    function setStep(step) {
+      currentStep = step;
+      document.querySelectorAll('.step-panel').forEach(p => p.classList.remove('active'));
+      document.getElementById(`panel-step${step}`).classList.add('active');
+
+      if (step === 1) {
+        stepTitle.textContent = 'STEP 1 / 3：土地セット';
+        if (buildingModel) buildingModel.visible = false;
+        updateLandStatus();
+      } else if (step === 2) {
+        stepTitle.textContent = 'STEP 2 / 3：建物選択';
+        stepInstruction.textContent = '配置したい3D建物データ（GLB）を選んでください';
+        reticle.visible = false;
+      } else if (step === 3) {
+        stepTitle.textContent = 'STEP 3 / 3：完成画面（土地＋建物）';
+        stepInstruction.textContent = '歩き回って境界線と建物の見え方を確認できます';
+        placeBuildingOnLand();
+      }
+    }
+
+    // 土地の中心と向きを計算し、GLB建物を原寸大で配置
+    function placeBuildingOnLand() {
+      if (landPoints.length < 4) return;
+
+      // 4点の重心を土地の中心座標とする
+      const center = new THREE.Vector3();
+      landPoints.forEach(p => center.add(p));
+      center.divideScalar(4);
+
+      // 手前辺（点0 → 点1）のベクトルから土地の基準角度を算出
+      const frontVec = new THREE.Vector3().subVectors(landPoints[1], landPoints[0]);
+      const baseAngle = Math.atan2(frontVec.x, frontVec.z) - Math.PI / 2;
+
+      // 入力された辺の数値（デフォルト15m）と、実際の空間上の距離の比率を計算
+      const inputFront = parseFloat(document.getElementById('edge-front').value) || 15;
+      const inputLeft = parseFloat(document.getElementById('edge-left').value) || 15;
+      const measuredFront = landPoints[0].distanceTo(landPoints[1]);
+      const measuredLeft = landPoints[0].distanceTo(landPoints[3]);
+
+      // 空間上の実測距離と入力値のスケール比率（安全のため極端な値にならないよう補正）
+      const scaleX = measuredFront > 0.5 ? (measuredFront / inputFront) : 1.0;
+      const scaleZ = measuredLeft > 0.5 ? (measuredLeft / inputLeft) : 1.0;
+      const uniformScale = (scaleX + scaleZ) / 2;
+
+      // 既存モデルがあれば削除
+      if (buildingModel) {
+        scene.remove(buildingModel);
+        buildingModel = null;
+      }
+
+      stepInstruction.textContent = '3Dモデルを読み込み中...';
+
+      loader.load(
+        selectedGlbUrl,
+        (gltf) => {
+          buildingModel = gltf.scene;
+          buildingModel.position.copy(center);
+          // 土地の向き + ユーザー微調整角度
+          buildingModel.userData.baseAngle = baseAngle;
+          buildingModel.rotation.y = baseAngle + buildingRotationY;
+
+          // 実寸（1m=1単位）をベースに、設定した土地スケールに合わせて配置
+          // ※現地で実寸15mの枠を打った場合は uniformScale ≒ 1.0（完全原寸大）になります
+          buildingModel.scale.set(uniformScale, uniformScale, uniformScale);
+
+          scene.add(buildingModel);
+          stepInstruction.textContent = '配置完了！スマホの角度に合わせて遠近感（台形見え）が自動適用されます';
+        },
+        undefined,
+        (err) => {
+          stepInstruction.textContent = 'モデル読込エラー: ' + selectedGlbUrl + ' が見つかりません';
+        }
+      );
+    }
+
+    // UIボタン類のイベント登録
+    function setupUIEvents() {
+      // STEP 1 操作
+      document.getElementById('reset-pins-btn').addEventListener('click', () => {
+        landPoints.length = 0;
+        pinMeshes.forEach(p => scene.remove(p));
+        pinMeshes.length = 0;
+        if (landLineMesh) {
+          scene.remove(landLineMesh);
+          landLineMesh = null;
+        }
+        updateLandStatus();
+      });
+
+      toStep2Btn.addEventListener('click', () => setStep(2));
+
+      // STEP 2 操作
+      document.querySelectorAll('.model-option').forEach(btn => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('.model-option').forEach(b => b.classList.remove('selected'));
+          btn.classList.add('selected');
+          selectedGlbUrl = btn.dataset.url;
+        });
+      });
+
+      // スマホローカルのGLBファイル読み込み対応
+      document.getElementById('local-glb-input').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (file) {
+          selectedGlbUrl = URL.createObjectURL(file);
+          document.querySelectorAll('.model-option').forEach(b => b.classList.remove('selected'));
+        }
+      });
+
+      document.getElementById('back-to-step1-btn').addEventListener('click', () => setStep(1));
+      document.getElementById('to-step3-btn').addEventListener('click', () => setStep(3));
+
+      // STEP 3 操作
+      document.getElementById('rotate-left-btn').addEventListener('click', () => {
+        if (!buildingModel) return;
+        buildingRotationY += THREE.MathUtils.degToRad(5);
+        buildingModel.rotation.y = buildingModel.userData.baseAngle + buildingRotationY;
+      });
+
+      document.getElementById('rotate-right-btn').addEventListener('click', () => {
+        if (!buildingModel) return;
+        buildingRotationY -= THREE.MathUtils.degToRad(5);
+        buildingModel.rotation.y = buildingModel.userData.baseAngle + buildingRotationY;
+      });
+
+      document.getElementById('back-to-step2-btn').addEventListener('click', () => setStep(2));
+      document.getElementById('restart-all-btn').addEventListener('click', () => {
+        document.getElementById('reset-pins-btn').click();
+        buildingRotationY = 0;
+        setStep(1);
+      });
+    }
+
+    // 毎フレームの描画＆地面認識ループ
+    function render(timestamp, frame) {
+      if (frame) {
+        const referenceSpace = renderer.xr.getReferenceSpace();
+        const session = renderer.xr.getSession();
+
+        if (!hitTestSourceRequested) {
+          session.requestReferenceSpace('viewer').then((viewerSpace) => {
+            session.requestHitTestSource({ space: viewerSpace }).then((source) => {
+              hitTestSource = source;
+            });
+          });
+          session.addEventListener('end', () => {
+            hitTestSourceRequested = false;
+            hitTestSource = null;
+          });
+          hitTestSourceRequested = true;
+        }
+
+        // STEP 1で4点打ち終わるまでは地面に白いリングを表示
+        if (hitTestSource && currentStep === 1 && landPoints.length < 4) {
+          const hitTestResults = frame.getHitTestResults(hitTestSource);
+          if (hitTestResults.length > 0) {
+            const hit = hitTestResults[0];
+            reticle.visible = true;
+            reticle.matrix.fromArray(hit.getPose(referenceSpace).transform.matrix);
+          } else {
+            reticle.visible = false;
+          }
+        }
+      }
+
+      renderer.render(scene, camera);
+    }
+  </script>
 </body>
 </html>
